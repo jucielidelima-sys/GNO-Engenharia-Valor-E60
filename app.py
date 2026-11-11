@@ -58,10 +58,36 @@ def connect_db():
     con.execute('CREATE TABLE IF NOT EXISTS snapshots (id INTEGER PRIMARY KEY, saved_at TEXT NOT NULL, payload TEXT NOT NULL)')
     return con
 
+def json_safe(value):
+    """Converte valores ausentes/não finitos em null sem alterar dados da sessão."""
+    import math
+    import numpy as np
+    if value is None or value is pd.NA or value is pd.NaT:
+        return None
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(v) for v in value]
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return value.isoformat() if not pd.isna(value) else None
+    if isinstance(value, np.ndarray):
+        return json_safe(value.tolist())
+    if isinstance(value, np.generic):
+        return json_safe(value.item())
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
 def encode_value(v):
     if isinstance(v, pd.DataFrame):
         return {'type': 'dataframe', 'data': v.to_json(orient='split', date_format='iso')}
-    return {'type': 'json', 'data': v}
+    return {'type': 'json', 'data': json_safe(v)}
 
 def decode_value(v):
     if v['type'] == 'dataframe':
