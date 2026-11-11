@@ -1,36 +1,4 @@
-        edit['Qtd nova']=pd.to_numeric(edit['Qtd nova'],errors='coerce').fillna(0).clip(lower=0)
-        edit['Custo novo (R$)']=edit['Custo unit. novo (R$)']*edit['Qtd nova']
-        edit['Economia (R$)']=edit['Custo atual (R$)']-edit['Custo novo (R$)']
-        st.session_state['simulacoes_itens_e60']=edit.drop(columns=['Custo novo (R$)','Economia (R$)']).to_dict('records')
-        selecionados=edit.loc[edit['Considerar no cenário'].fillna(False).astype(bool)].copy()
-        duplicados=selecionados['Referência'].duplicated(keep=False)
-        if duplicados.any():
-            st.error('Há alternativas selecionadas para a mesma linha original. Desmarque as alternativas concorrentes para evitar dupla contagem.')
-        else:
-            total=selecionados['Economia (R$)'].sum()
-            x,y,z=st.columns(3)
-            x.metric('Economia potencial por ocorrência',f'R$ {total:+.2f}')
-            y.metric('Impacto ilustrativo mensal',f'R$ {total*volume:+,.2f}')
-            z.metric('Alternativas incluídas',len(selecionados))
-            st.caption('Projeção mensal pressupõe que cada ocorrência selecionada corresponde a uma unidade por forno. Confirme a explosão da BOM e o consumo real antes de usar como orçamento.')
-        st.dataframe(edit[['Código atual','Descrição atual','Descrição nova','Qtd atual','Qtd nova','Custo atual (R$)','Custo novo (R$)','Economia (R$)','Status','Considerar no cenário']],hide_index=True,use_container_width=True)
-        st.download_button('⬇️ Exportar simulações CSV',edit.to_csv(index=False,sep=';',decimal=',').encode('utf-8-sig'),'E60_simulacao_substituicao_itens.csv','text/csv')
-        st.caption('As alterações ficam nesta sessão. Exporte o CSV antes de fechar a página; o GitHub não armazena automaticamente os lançamentos.')
-    else:
-        st.info('Selecione um item acima e adicione uma alternativa para começar.')
-
-
-# Painel consolidado: não utiliza o potencial genérico dos projetos, evitando contagem dupla.
-with abas[8]:
-    st.subheader('📈 Painel integrado — itens + cronoanálise')
-    st.caption('Custo original × cenário projetado, sem adicionar estimativas genéricas da carteira de projetos.')
-    st.warning('Valores de cronoanálise dependem de taxa de custo por hora e multiplicidade por forno. Redução de tempo só vira economia financeira quando a capacidade/custo puder ser efetivamente capturada. Confira a explosão da BOM antes de validar o total.')
-    c1,c2,c3=st.columns(3)
-    with c1:
-        taxa_hora=st.number_input('Custo do recurso (R$/hora)',min_value=0.0,value=0.0,step=5.0,key='taxa_hora_integrado',help='Taxa efetivamente evitável; zero até confirmar com controladoria.')
-    with c2:
-        so_aprovados=st.checkbox('Considerar somente alternativas aprovadas',value=False,key='aprovados_integrado')
-    with c3:
+with c3:
         incluir_crono=st.checkbox('Incluir economia de tempo no cenário',value=True,key='incluir_crono_integrado')
     sims_integradas=pd.DataFrame(st.session_state.get('simulacoes_itens_e60',[]))
     if not sims_integradas.empty:
