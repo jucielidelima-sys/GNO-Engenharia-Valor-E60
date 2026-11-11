@@ -706,6 +706,7 @@ with abas[6]:
             linhas_tempo.append({
                 'ID': f'OP-{idx+11:03d}',
                 'Conjunto / código': contexto_codigo or 'E60 (nível principal)',
+                'Estágio': est,
                 'Descrição do item': contexto_descricao or 'NARDELLI EMBUTIR 60L BLACK',
                 'Operação': str(r.get('Descrição','')).strip(),
                 'Centro de custo': str(r.get('Centro de custo','')).strip(),
@@ -716,8 +717,19 @@ with abas[6]:
             })
     tempos_base=pd.DataFrame(linhas_tempo)
     st.info(f'{len(tempos_base)} registros de operação identificados na ficha original (origem M, exibidos em segundos). Os tempos de diferentes níveis da BOM não devem ser somados como tempo total do forno sem verificar multiplicidades e roteiros.')
-    if 'tempos_crono_e60_segundos_descricao_v2' not in st.session_state or len(st.session_state['tempos_crono_e60_segundos_descricao_v2']) != len(tempos_base):
-        st.session_state['tempos_crono_e60_segundos_descricao_v2']=tempos_base.copy()
+    # Migração por ID: mantém medições anteriores e acrescenta o estágio da ficha.
+    chave_crono='tempos_crono_e60_segundos_descricao_v2'
+    anterior=st.session_state.get(chave_crono)
+    if not isinstance(anterior,pd.DataFrame) or 'ID' not in anterior.columns:
+        st.session_state[chave_crono]=tempos_base.copy()
+    else:
+        base_atual=tempos_base.copy().set_index('ID',drop=False)
+        anterior=anterior.drop_duplicates(subset=['ID'],keep='last').set_index('ID',drop=False)
+        for coluna in ['Novo tempo (s)','Amostras (n)','Observações']:
+            if coluna in anterior.columns:
+                comuns=base_atual.index.intersection(anterior.index)
+                base_atual.loc[comuns,coluna]=anterior.loc[comuns,coluna]
+        st.session_state[chave_crono]=base_atual.reset_index(drop=True)
     pesquisa=st.text_input('Pesquisar descrição do item, operação, código ou centro de custo',key='busca_crono')
     # Migração conservadora: corrige somente o tempo padrão antigo da OP-019,
     # inclusive em snapshots já carregados do Supabase; mantém novas medições.
@@ -730,11 +742,11 @@ with abas[6]:
             st.session_state['tempos_crono_e60_segundos_descricao_v2'] = _crono_atual
     editavel=st.session_state['tempos_crono_e60_segundos_descricao_v2'].copy()
     if pesquisa:
-        filtro=editavel[['Conjunto / código','Descrição do item','Operação','Centro de custo']].astype(str).apply(lambda col:col.str.contains(pesquisa,case=False,regex=False)).any(axis=1)
+        filtro=editavel[['Conjunto / código','Estágio','Descrição do item','Operação','Centro de custo']].astype(str).apply(lambda col:col.str.contains(pesquisa,case=False,regex=False)).any(axis=1)
         visiveis=editavel.loc[filtro].copy()
     else:
         visiveis=editavel.copy()
-    novo=st.data_editor(visiveis,hide_index=True,use_container_width=True,height=490,key='editor_crono_segundos_descricao_v2',disabled=['ID','Conjunto / código','Descrição do item','Operação','Centro de custo','Tempo padrão (s)'],column_config={
+    novo=st.data_editor(visiveis,hide_index=True,use_container_width=True,height=490,key='editor_crono_segundos_descricao_v2',disabled=['ID','Conjunto / código','Estágio','Descrição do item','Operação','Centro de custo','Tempo padrão (s)'],column_config={
         'Tempo padrão (s)':st.column_config.NumberColumn(format='%.2f'),
         'Novo tempo (s)':st.column_config.NumberColumn(format='%.2f',min_value=0),
         'Amostras (n)':st.column_config.NumberColumn(min_value=1,step=1),
@@ -749,7 +761,7 @@ with abas[6]:
     a.metric('Operações cadastradas',len(comp))
     b.metric('Operações cronometradas',len(medidos))
     c.metric('Diferença média (%)',f"{medidos['Variação (%)'].mean():+.1f}%" if len(medidos) else '—')
-    st.dataframe(comp.loc[comp['Novo tempo (s)'].notna(),['ID','Conjunto / código','Descrição do item','Operação','Tempo padrão (s)','Novo tempo (s)','Diferença (s)','Variação (%)']],hide_index=True,use_container_width=True)
+    st.dataframe(comp.loc[comp['Novo tempo (s)'].notna(),['ID','Conjunto / código','Estágio','Descrição do item','Operação','Tempo padrão (s)','Novo tempo (s)','Diferença (s)','Variação (%)']],hide_index=True,use_container_width=True)
     st.download_button('⬇️ Exportar confronto de tempos (CSV)',comp.to_csv(index=False,sep=';',decimal=',').encode('utf-8-sig'),file_name='E60_confronto_cronoanalise.csv',mime='text/csv')
     st.caption('Os lançamentos permanecem na sessão do navegador. Exporte o CSV para guardar os resultados; a publicação no GitHub não armazena automaticamente os lançamentos de todos os usuários.')
 
@@ -887,9 +899,9 @@ with abas[8]:
             saved_sel=st.session_state.get('crono_integracao_selecoes_e60',{})
             cr['Multiplicidade por forno']=cr['ID'].astype(str).map(lambda i:saved_sel.get(i,{}).get('Multiplicidade por forno',1.0))
             cr['Considerar']=cr['ID'].astype(str).map(lambda i:saved_sel.get(i,{}).get('Considerar',False))
-            chaves=['ID','Conjunto / código','Descrição do item','Operação','Tempo padrão (s)','Novo tempo (s)','Multiplicidade por forno','Considerar']
+            chaves=['ID','Conjunto / código','Estágio','Descrição do item','Operação','Tempo padrão (s)','Novo tempo (s)','Multiplicidade por forno','Considerar']
             st.caption('Marque apenas operações confirmadas, informe quantas vezes ocorrem por forno e evite operações que já estejam incluídas no ganho de um item substituído.')
-            ed=st.data_editor(cr[chaves],hide_index=True,use_container_width=True,key='editor_integracao_tempos',disabled=['ID','Conjunto / código','Descrição do item','Operação','Tempo padrão (s)','Novo tempo (s)'],column_config={'Considerar':st.column_config.CheckboxColumn('Incluir'),'Multiplicidade por forno':st.column_config.NumberColumn(min_value=0.0,step=1.0,format='%.2f')})
+            ed=st.data_editor(cr[chaves],hide_index=True,use_container_width=True,key='editor_integracao_tempos',disabled=['ID','Conjunto / código','Estágio','Descrição do item','Operação','Tempo padrão (s)','Novo tempo (s)'],column_config={'Considerar':st.column_config.CheckboxColumn('Incluir'),'Multiplicidade por forno':st.column_config.NumberColumn(min_value=0.0,step=1.0,format='%.2f')})
             st.session_state['crono_integracao_selecoes_e60']={str(row['ID']):{'Considerar':bool(row['Considerar']),'Multiplicidade por forno':float(row['Multiplicidade por forno'])} for _,row in ed.iterrows()}
             ed=ed.loc[ed['Considerar'].fillna(False).astype(bool)].copy()
             ed['Multiplicidade por forno']=pd.to_numeric(ed['Multiplicidade por forno'],errors='coerce').fillna(0).clip(lower=0)
@@ -897,7 +909,7 @@ with abas[8]:
             if incluir_crono:
                 ganho_tempo=float(ed['Economia tempo (R$)'].sum())
             if not ed.empty:
-                st.dataframe(ed[['Descrição do item','Operação','Multiplicidade por forno','Economia tempo (R$)']],hide_index=True,use_container_width=True)
+                st.dataframe(ed[['Descrição do item','Estágio','Operação','Multiplicidade por forno','Economia tempo (R$)']],hide_index=True,use_container_width=True)
         else:
             st.info('Preencha os novos tempos na aba Cronoanálise para habilitar o cálculo.')
     else:
