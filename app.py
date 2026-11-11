@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 DB_PATH = Path(__file__).resolve().parent / 'storage' / 'e60_simulacoes.sqlite3'
 PERSIST_KEYS = ['simulacoes_itens_e60', 'tempos_crono_e60_segundos_descricao_v2', 'projetos_ativos',
                 'taxa_hora_integrado', 'aprovados_integrado', 'incluir_crono_integrado',
-                'crono_integracao_selecoes_e60']
+                'crono_integracao_selecoes_e60', 'crono_duplicatas_arquivadas_e60']
 
 st.set_page_config(page_title='E60 | Engenharia de Valor', page_icon='🏭', layout='wide')
 
@@ -730,49 +730,55 @@ with abas[6]:
                 comuns=base_atual.index.intersection(anterior.index)
                 base_atual.loc[comuns,coluna]=anterior.loc[comuns,coluna]
         st.session_state[chave_crono]=base_atual.reset_index(drop=True)
-    # Consolidar somente operações efetivamente idênticas, preservando lançamentos.
-    # Não confundir mesmo código em estágios, centros ou operações diferentes.
+    # Uma operação por código + estágio + roteiro + centro de custo.
+    # Repetições na explosão multinível da BOM não são operações adicionais.
+    # Nunca descartar medições divergentes: guardar cópias no arquivo de auditoria.
     _crono = st.session_state[chave_crono].copy()
-    _campos_identidade = ['Conjunto / código', 'Estágio', 'Descrição do item',
-                          'Operação', 'Centro de custo', 'Tempo padrão (s)']
     _campos_edicao = ['Novo tempo (s)', 'Amostras (n)', 'Observações']
     def _valor_preenchido(v):
         return pd.notna(v) and str(v).strip() not in ('', 'None', 'nan')
+    def _normalizar(v):
+        return ' '.join(str(v).strip().casefold().split())
     def _chave_linha(r):
-        partes = [str(r[c]).strip().casefold() for c in _campos_identidade[:-1]]
-        tempo = pd.to_numeric(r['Tempo padrão (s)'], errors='coerce')
-        return tuple(partes + [round(float(tempo), 5) if pd.notna(tempo) else None])
+        return tuple(_normalizar(r[c]) for c in
+                     ['Conjunto / código', 'Estágio', 'Operação', 'Centro de custo'])
     _grupos = {}
     for _idx, _linha in _crono.iterrows():
         _grupos.setdefault(_chave_linha(_linha), []).append(_idx)
-    _manter = []
-    _id_substituto = {}
-    _conflitos = 0
+    _manter, _id_substituto, _arquivar = [], {}, []
     for _indices in _grupos.values():
         if len(_indices) == 1:
             _manter.append(_indices[0])
             continue
-        # Priorizar o registro com maior quantidade de informações já preenchidas.
-        _ordenados = sorted(_indices, key=lambda i: (-sum(_valor_preenchido(_crono.at[i,c]) for c in _campos_edicao), i))
+        # O lançamento com cronoanálise preenchida tem prioridade.
+        _ordenados = sorted(_indices, key=lambda i: (
+            -sum(_valor_preenchido(_crono.at[i,c]) for c in _campos_edicao), i))
         _principal = _ordenados[0]
         _manter.append(_principal)
         for _outro in _ordenados[1:]:
-            _discorda = any(_valor_preenchido(_crono.at[_principal,c]) and
-                            _valor_preenchido(_crono.at[_outro,c]) and
-                            str(_crono.at[_principal,c]).strip() != str(_crono.at[_outro,c]).strip()
-                            for c in _campos_edicao)
-            if _discorda:
-                # Dados distintos são medições distintas: não excluir automaticamente.
-                _manter.append(_outro)
-                _conflitos += 1
-                continue
+            _divergencias = [c for c in _campos_edicao
+                if _valor_preenchido(_crono.at[_principal,c])
+                and _valor_preenchido(_crono.at[_outro,c])
+                and str(_crono.at[_principal,c]).strip() != str(_crono.at[_outro,c]).strip()]
+            _registro = _crono.loc[_outro].to_dict()
+            _registro['ID consolidado'] = str(_crono.at[_principal,'ID'])
+            _registro['Motivo'] = 'Medições divergentes' if _divergencias else 'Repetição da BOM'
+            _arquivar.append(_registro)
             for _c in _campos_edicao:
                 if not _valor_preenchido(_crono.at[_principal,_c]) and _valor_preenchido(_crono.at[_outro,_c]):
                     _crono.at[_principal,_c] = _crono.at[_outro,_c]
             _id_substituto[str(_crono.at[_outro,'ID'])] = str(_crono.at[_principal,'ID'])
     _crono = _crono.loc[sorted(_manter)].reset_index(drop=True)
     st.session_state[chave_crono] = _crono
-    # Preservar seleção de integração das operações que foram consolidadas.
+    _historico = st.session_state.get('crono_duplicatas_arquivadas_e60', [])
+    if not isinstance(_historico,list):
+        _historico=[]
+    _ids_historico={str(x.get('ID')) for x in _historico if isinstance(x,dict)}
+    for _registro in _arquivar:
+        if str(_registro['ID']) not in _ids_historico:
+            _historico.append(_registro)
+            _ids_historico.add(str(_registro['ID']))
+    st.session_state['crono_duplicatas_arquivadas_e60'] = _historico
     _selecoes = st.session_state.get('crono_integracao_selecoes_e60')
     if isinstance(_selecoes,dict) and _id_substituto:
         _selecoes = dict(_selecoes)
@@ -781,8 +787,16 @@ with abas[6]:
                 _selecoes[_novo] = _selecoes[_antigo]
             _selecoes.pop(_antigo,None)
         st.session_state['crono_integracao_selecoes_e60'] = _selecoes
-    if _conflitos:
-        st.warning(f'{_conflitos} registros repetidos têm medições diferentes e foram mantidos para conferência, evitando perda de dados.')
+    if _arquivar:
+        st.info(f'{len(_arquivar)} repetições consolidadas. Medições anteriores preservadas no histórico de duplicatas.')
+    with st.expander('📁 Histórico de duplicatas consolidadas (auditoria)'):
+        if _historico:
+            st.dataframe(pd.DataFrame(_historico),use_container_width=True,hide_index=True)
+            st.download_button('Exportar histórico de duplicatas (CSV)',
+                pd.DataFrame(_historico).to_csv(index=False,sep=';',decimal=',').encode('utf-8-sig'),
+                file_name='E60_duplicatas_arquivadas.csv',mime='text/csv')
+        else:
+            st.caption('Nenhuma duplicata arquivada.')
     pesquisa=st.text_input('Pesquisar descrição do item, operação, código ou centro de custo',key='busca_crono')
     # Migração conservadora: corrige somente o tempo padrão antigo da OP-019,
     # inclusive em snapshots já carregados do Supabase; mantém novas medições.
